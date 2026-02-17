@@ -3,12 +3,12 @@
 import asyncio
 from datetime import date
 
-from wb_api_sdk import StatisticsAPIClient, WBAuthError
+from wb_api_sdk import StatisticAPIClient, WBAuthError
 
 
 async def main() -> None:
     """Example: Fetch sales report from Statistics API."""
-    async with StatisticsAPIClient(token="your-api-token") as client:
+    async with StatisticAPIClient(token="your-api-token") as client:
         try:
             # Standard mode - all data in memory
             report = await client.reports.get_report_detail_by_period(
@@ -29,9 +29,9 @@ async def main() -> None:
             )
             print(f"Slim report: {report[:2]}")
 
-            # Streaming mode - memory efficient
+            # Streaming mode - memory efficient (sync, uses requests+ijson)
             row_count = 0
-            async for item in client.reports.stream_report_detail_by_period(
+            for item in client.reports.stream_report_detail_by_period(
                 date_from=date(2024, 1, 1),
                 date_to=date(2024, 1, 31),
                 fetch_all=True,

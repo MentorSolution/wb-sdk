@@ -1,20 +1,24 @@
 """Reports API for Statistics service."""
 
-from collections.abc import AsyncIterator
+from collections.abc import Iterator
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Callable, Literal
 
+import ijson  # type: ignore[import-not-found]
+import requests
+
 from wb_api_sdk.endpoints import StatisticsEndpoints
+from wb_api_sdk.exceptions import WBAPIError, WBAuthError, WBRateLimitError
 from wb_api_sdk.types import APIItem, APIItemsList
 
 if TYPE_CHECKING:
-    from wb_api_sdk.statistics.client import StatisticsAPIClient
+    from wb_api_sdk.statistic.client import StatisticAPIClient
 
 
 class ReportsAPI:
     """Reports subclient for Statistics API."""
 
-    def __init__(self, client: "StatisticsAPIClient") -> None:
+    def __init__(self, client: "StatisticAPIClient") -> None:
         self._client = client
 
     def _format_date(self, value: date | datetime | str) -> str:
@@ -71,10 +75,14 @@ class ReportsAPI:
                 if not rows:
                     break
 
+                last_rrdid = rows[-1].get("rrd_id", 0)
                 if transform:
                     rows = [transform(row) for row in rows]
                 all_rows.extend(rows)
-                current_rrdid = rows[-1].get("rrd_id", 0)
+
+                if last_rrdid == current_rrdid:
+                    break
+                current_rrdid = last_rrdid
 
             return all_rows
 
@@ -102,62 +110,86 @@ class ReportsAPI:
         period: Literal["weekly", "daily"] = "weekly",
         fetch_all: bool = False,
         transform: Callable[[APIItem], APIItem] | None = None,
-    ) -> AsyncIterator[APIItem]:
+        timeout: int = 120,
+    ) -> Iterator[APIItem]:
         """Stream sales report by realization period.
 
-        Memory-efficient streaming version. Returns AsyncIterator directly
-        (no await needed before async for).
+        Memory-efficient streaming version using requests + ijson.
+        Parses JSON row-by-row without loading full response into memory.
+
+        Note: This is a sync method (uses requests, not httpx).
+        Can be called from async code without issues.
 
         Args:
             date_from: Report start date (RFC3339 format, Moscow timezone UTC+3).
             date_to: Report end date (RFC3339 format, Moscow timezone UTC+3).
-            limit: Number of rows in response (max 100000).
+            limit: Number of rows per page (max 100000).
             period: Report frequency - "weekly" or "daily".
             fetch_all: If True, fetches all pages automatically.
             transform: Optional callback to transform each item.
+            timeout: Request timeout in seconds.
 
-        Returns:
-            AsyncIterator yielding report rows one by one.
+        Yields:
+            Report rows one by one.
         """
-        return self._stream_with_pagination(
-            date_from, date_to, limit, period, fetch_all, transform
-        )
+        base_url = self._client.base_url
+        token = self._client.token
+        endpoint = StatisticsEndpoints.REPORT_DETAIL_BY_PERIOD
 
-    async def _stream_with_pagination(
-        self,
-        date_from: date | datetime | str,
-        date_to: date | datetime | str,
-        limit: int,
-        period: Literal["weekly", "daily"],
-        fetch_all: bool,
-        transform: Callable[[APIItem], APIItem] | None,
-    ) -> AsyncIterator[APIItem]:
-        """Stream report with pagination support."""
         current_rrdid = 0
 
         while True:
-            params = {
-                "dateFrom": self._format_date(date_from),
-                "dateTo": self._format_date(date_to),
-                "limit": limit,
-                "rrdid": current_rrdid,
-                "period": period,
-            }
+            url = (
+                f"{base_url}{endpoint}"
+                f"?dateFrom={self._format_date(date_from)}"
+                f"&dateTo={self._format_date(date_to)}"
+                f"&limit={limit}"
+                f"&rrdid={current_rrdid}"
+                f"&period={period}"
+            )
+            headers = {"Authorization": token}
 
-            last_rrdid = 0
-            row_count = 0
+            with requests.get(
+                url, headers=headers, stream=True, timeout=timeout
+            ) as resp:
+                if resp.status_code == 204:
+                    return
 
-            async for item in self._client.stream_get(
-                StatisticsEndpoints.REPORT_DETAIL_BY_PERIOD,
-                json_path="item",
-                transform=transform,
-                params=params,
-            ):
-                yield item
-                last_rrdid = item.get("rrd_id", 0)
-                row_count += 1
+                if resp.status_code == 401:
+                    raise WBAuthError(
+                        "Unauthorized", status_code=401, response_data={}
+                    )
 
-            if row_count == 0 or not fetch_all:
-                return
+                if resp.status_code == 429:
+                    retry_after = resp.headers.get("Retry-After")
+                    raise WBRateLimitError(
+                        "Rate limit exceeded",
+                        status_code=429,
+                        retry_after=float(retry_after) if retry_after else None,
+                    )
 
-            current_rrdid = last_rrdid
+                if resp.status_code != 200:
+                    raise WBAPIError(
+                        f"HTTP {resp.status_code}",
+                        status_code=resp.status_code,
+                        response_data={},
+                    )
+
+                last_rrdid = 0
+                row_count = 0
+
+                for item in ijson.items(resp.raw, "item"):
+                    rrd_id = item.get("rrd_id", 0)
+                    if transform:
+                        item = transform(item)
+                    yield item
+                    last_rrdid = rrd_id
+                    row_count += 1
+
+                if row_count == 0 or not fetch_all:
+                    return
+
+                if last_rrdid == current_rrdid:
+                    return
+
+                current_rrdid = last_rrdid

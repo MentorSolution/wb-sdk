@@ -3,13 +3,13 @@
 from .base import BaseAPIClient, PingCache, RetryConfig
 from .endpoints import BaseURLs, Endpoints, SandboxURLs, get_sandbox_url
 from .exceptions import WBAPIError, WBAuthError, WBRateLimitError
-from .statistics import StatisticsAPIClient
+from .statistic import StatisticAPIClient
 from .types import APIItem, APIItemsList, APIResult
 
 __all__ = [
     # Clients
     "BaseAPIClient",
-    "StatisticsAPIClient",
+    "StatisticAPIClient",
     "RetryConfig",
     "PingCache",
     # Endpoints
@@ -26,5 +26,3 @@ __all__ = [
     "APIItemsList",
     "APIResult",
 ]
-
-__version__ = "0.1.0"

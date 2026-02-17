@@ -8,7 +8,7 @@ from .reports import ReportsAPI
 
 
 @dataclass
-class StatisticsAPIClient(BaseAPIClient):
+class StatisticAPIClient(BaseAPIClient):
     """Client for WB Statistics API.
 
     Usage:

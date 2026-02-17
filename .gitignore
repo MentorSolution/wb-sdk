@@ -47,6 +47,7 @@ uv.lock
 htmlcov/
 .tox/
 .nox/
+tests/debug_files/
 
 # mypy / pyright
 .mypy_cache/
